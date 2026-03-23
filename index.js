@@ -9,19 +9,16 @@ bot.use(session());
 const db = [];
 
 /* ========================
-   ⚡ ANIMATION HELPER
+   ⚡ HELPER
 ======================== */
 const wait = (ms) => new Promise(res => setTimeout(res, ms));
 
 async function loading(ctx, text = "⏳ Processing...") {
   const msg = await ctx.reply(text);
-  await wait(600);
+  await wait(500);
   try { await ctx.deleteMessage(msg.message_id); } catch {}
 }
 
-/* ========================
-   🎛️ MENUS
-======================== */
 const mainMenu = () =>
   Markup.keyboard([
     ['📦 Store Message'],
@@ -41,10 +38,11 @@ bot.start(async (ctx) => {
 });
 
 /* ========================
-   📦 STORE FLOW
+   📦 STORE START
 ======================== */
 bot.hears('📦 Store Message', async (ctx) => {
   ctx.session = { step: 'expiry' };
+
   await loading(ctx);
   ctx.reply('⏳ Select expiry:', Markup.keyboard([
     ['10 min', '1 hour'],
@@ -80,37 +78,41 @@ bot.hears(['10 min', '1 hour', '1 day', 'Never'], async (ctx) => {
 });
 
 /* ========================
-   🔐 PASSWORD STEP
+   🔐 PASSWORD + ONE-TIME (FIXED)
 ======================== */
 bot.hears('Yes', (ctx) => {
-  if (ctx.session?.step !== 'password') return;
+  const s = ctx.session;
 
-  ctx.session.step = 'set_password';
-  ctx.reply('🔐 Send password:', backMenu());
+  if (s?.step === 'password') {
+    s.step = 'set_password';
+    return ctx.reply('🔐 Send password:', backMenu());
+  }
+
+  if (s?.step === 'onetime') {
+    s.oneTime = true;
+    s.step = 'send';
+    return ctx.reply('📨 Send message to store', backMenu());
+  }
 });
 
 bot.hears('No', (ctx) => {
-  if (ctx.session?.step !== 'password') return;
+  const s = ctx.session;
 
-  ctx.session.password = null;
-  ctx.session.step = 'onetime';
+  if (s?.step === 'password') {
+    s.password = null;
+    s.step = 'onetime';
 
-  ctx.reply('👁 One-time view?', Markup.keyboard([
-    ['Yes', 'No'],
-    ['⬅️ Back']
-  ]).resize());
-});
+    return ctx.reply('👁 One-time view?', Markup.keyboard([
+      ['Yes', 'No'],
+      ['⬅️ Back']
+    ]).resize());
+  }
 
-/* ========================
-   👁 ONE-TIME
-======================== */
-bot.hears(['Yes', 'No'], (ctx) => {
-  if (ctx.session?.step !== 'onetime') return;
-
-  ctx.session.oneTime = ctx.message.text === 'Yes';
-  ctx.session.step = 'send';
-
-  ctx.reply('📨 Send message to store', backMenu());
+  if (s?.step === 'onetime') {
+    s.oneTime = false;
+    s.step = 'send';
+    return ctx.reply('📨 Send message to store', backMenu());
+  }
 });
 
 /* ========================
@@ -162,9 +164,11 @@ bot.on('message', async (ctx) => {
     return ctx.reply(`✅ Stored!\n\n🔗 ${link}`, mainMenu());
   }
 
-  // PASSWORD CHECK
+  // PASSWORD CHECK (for opening link)
   if (s?.check) {
     const stored = db.find(d => d.uniqueParam === s.check);
+
+    if (!stored) return ctx.reply('🚫 Not found');
 
     if (ctx.message.text !== stored.password) {
       return ctx.reply('❌ Wrong password');
@@ -176,7 +180,7 @@ bot.on('message', async (ctx) => {
 });
 
 /* ========================
-   🔗 RETRIEVE
+   🔗 RETRIEVE FROM LINK
 ======================== */
 bot.start(async (ctx) => {
   const param = ctx.startPayload;
@@ -232,4 +236,4 @@ bot.hears('📁 My Files', (ctx) => {
 /* ======================== */
 bot.launch({ dropPendingUpdates: true });
 
-console.log('🚀 PERFECT BOT RUNNING');
+console.log('🚀 FINAL BOT RUNNING');
