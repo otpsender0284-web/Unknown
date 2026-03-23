@@ -8,10 +8,11 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 bot.use(session({ defaultSession: () => ({}) }));
 
 const ADMIN_ID = 8065726393;
+const ADMIN_USERNAME = "yourusername"; // 👈 change anytime
 const FREE_LIMIT = 5;
 
 /* ========================
-   💾 DB INIT (FIXED)
+   💾 DB INIT
 ======================== */
 const client = new MongoClient(process.env.MONGO_URI);
 let db, users;
@@ -51,32 +52,40 @@ async function getUser(id) {
   return user;
 }
 
+const isAdmin = (ctx) => ctx.from.id === ADMIN_ID;
+
 /* ========================
-   🎛️ MENU
+   🎛️ MENUS
 ======================== */
-const menu = () =>
+const userMenu = () =>
   Markup.keyboard([
     ['📦 Store Message', '📁 My Files'],
     ['🔍 Search', '👥 Refer & Earn'],
     ['💎 Premium', '🗑 Delete All']
   ]).resize();
 
+const adminMenu = () =>
+  Markup.keyboard([
+    ['📊 Stats', '👥 Users'],
+    ['📢 Broadcast', '🚫 Ban'],
+    ['✅ Unban', '💎 Give Premium'],
+    ['📁 User Files'],
+    ['⬅️ Exit Admin']
+  ]).resize();
+
 /* ========================
-   🚀 START + LINK + REF
+   🚀 START
 ======================== */
 bot.start(async (ctx) => {
   const user = await getUser(ctx.from.id);
-
   if (user.banned) return ctx.reply('🚫 You are banned');
 
   const param = ctx.startPayload;
 
-  // 🔗 FILE OPEN
   if (param && !param.startsWith('ref_')) {
     const stored = await db.findOne({ uniqueParam: param });
 
     if (!stored) return ctx.reply('🚫 File not found');
-
     if (stored.expiresAt && Date.now() > stored.expiresAt)
       return ctx.reply('⏳ Link expired');
 
@@ -88,7 +97,6 @@ bot.start(async (ctx) => {
     return sendStored(ctx, stored);
   }
 
-  // 👥 REFERRAL
   if (param && param.startsWith('ref_')) {
     const refId = Number(param.split('_')[1]);
 
@@ -104,155 +112,136 @@ bot.start(async (ctx) => {
   }
 
   ctx.session = {};
-  ctx.reply('👋 Welcome!', menu());
+  ctx.reply('👋 Welcome!', userMenu());
 });
 
 /* ========================
-   📦 STORE FLOW
+   👑 ADMIN PANEL
 ======================== */
-bot.hears('📦 Store Message', (ctx) => {
-  ctx.session = { step: 'expiry' };
+bot.command('admin', (ctx) => {
+  if (!isAdmin(ctx)) return;
+  ctx.session.admin = true;
+  ctx.reply('👑 Admin Panel', adminMenu());
+});
 
-  ctx.reply('⏳ Select expiry:', Markup.keyboard([
-    ['10 min', '1 hour'],
-    ['1 day', 'Never']
-  ]).resize());
+bot.hears('⬅️ Exit Admin', (ctx) => {
+  if (!isAdmin(ctx)) return;
+  ctx.session.admin = false;
+  ctx.reply('Exited admin', userMenu());
 });
 
 /* ========================
-   ⏳ EXPIRY
+   📊 STATS
 ======================== */
-bot.hears(['10 min', '1 hour', '1 day', 'Never'], (ctx) => {
-  if (ctx.session?.step !== 'expiry') return;
+bot.hears('📊 Stats', async (ctx) => {
+  if (!isAdmin(ctx)) return;
 
-  const map = {
-    '10 min': 600000,
-    '1 hour': 3600000,
-    '1 day': 86400000
-  };
+  const totalFiles = await db.countDocuments();
+  const allUsers = await users.find().toArray();
 
-  ctx.session.expiresAt =
-    ctx.message.text === 'Never'
-      ? null
-      : Date.now() + map[ctx.message.text];
+  let totalSize = 0;
+  const files = await db.find().toArray();
+  files.forEach(f => totalSize += f.fileSize || 0);
 
-  ctx.session.step = 'password';
-
-  ctx.reply('🔐 Add password?', Markup.keyboard([['Yes', 'No']]).resize());
+  ctx.reply(
+    `📊 Stats\n\n👤 Users: ${allUsers.length}\n📁 Files: ${totalFiles}\n💾 ${(totalSize/1024/1024).toFixed(2)} MB`
+  );
 });
 
 /* ========================
-   🔐 PASSWORD FLOW
+   👥 USERS
 ======================== */
-bot.hears('Yes', (ctx) => {
-  if (ctx.session?.step === 'password') {
-    ctx.session.step = 'set_password';
-    return ctx.reply('🔐 Send password');
-  }
+bot.hears('👥 Users', async (ctx) => {
+  if (!isAdmin(ctx)) return;
 
-  if (ctx.session?.step === 'onetime') {
-    ctx.session.oneTime = true;
-    ctx.session.step = 'send';
+  const list = await users.find().limit(20).toArray();
 
-    return ctx.reply('📤 Send file (photo/video/document/text)', Markup.removeKeyboard());
-  }
-});
+  let text = '👥 Users:\n\n';
 
-bot.hears('No', (ctx) => {
-  if (ctx.session?.step === 'password') {
-    ctx.session.password = null;
-    ctx.session.step = 'onetime';
-
-    return ctx.reply('👁 One-time view?', Markup.keyboard([['Yes', 'No']]).resize());
-  }
-
-  if (ctx.session?.step === 'onetime') {
-    ctx.session.oneTime = false;
-    ctx.session.step = 'send';
-
-    return ctx.reply('📤 Send file (photo/video/document/text)', Markup.removeKeyboard());
-  }
-});
-
-/* ========================
-   📁 MY FILES
-======================== */
-bot.hears('📁 My Files', async (ctx) => {
-  const files = await db.find({ chatId: ctx.chat.id }).limit(10).toArray();
-
-  if (!files.length) return ctx.reply('📭 No files');
-
-  let text = '📁 Your Files:\n\n';
-
-  files.forEach(f => {
-    text += `🔗 https://t.me/${ctx.botInfo.username}?start=${f.uniqueParam}\n👁 ${f.views}\n\n`;
+  list.forEach(u => {
+    text += `🆔 ${u.userId}\n💎 ${u.premium}\n🚫 ${u.banned}\n\n`;
   });
 
   ctx.reply(text);
 });
 
 /* ========================
-   🔍 SEARCH
+   🧠 MAIN MESSAGE HANDLER
 ======================== */
-bot.hears('🔍 Search', (ctx) => {
-  ctx.session.step = 'search';
-  ctx.reply('🔍 Send file link or code');
-});
-
-/* ========================
-   🗑 DELETE ALL
-======================== */
-bot.hears('🗑 Delete All', async (ctx) => {
-  await db.deleteMany({ chatId: ctx.chat.id });
-  ctx.reply('🗑 All files deleted');
-});
-
-/* ========================
-   👥 REFERRAL
-======================== */
-bot.hears('👥 Refer & Earn', async (ctx) => {
-  const link = `https://t.me/${ctx.botInfo.username}?start=ref_${ctx.from.id}`;
-  ctx.reply(`👥 Invite & Earn:\n\n${link}`);
-});
-
-/* ========================
-   💎 PREMIUM
-======================== */
-bot.hears('💎 Premium', (ctx) => {
-  ctx.reply('💎 Contact admin to upgrade');
-});
-
-/* ========================
-   🧠 MESSAGE HANDLER (FIXED)
-======================== */
-bot.on('message', async (ctx, next) => {
+bot.on('message', async (ctx) => {
   const s = ctx.session || {};
   const user = await getUser(ctx.from.id);
 
   if (user.banned) return;
 
-  // Anti-spam
-  if (!s.last) s.last = 0;
-  if (Date.now() - s.last < 800) return;
-  s.last = Date.now();
+  // 🔥 ADMIN ACTIONS
+  if (isAdmin(ctx)) {
 
-  // PASSWORD INPUT
+    if (s.step === 'broadcast') {
+      const all = await users.find().toArray();
+      let sent = 0;
+
+      for (const u of all) {
+        try {
+          await ctx.telegram.copyMessage(u.userId, ctx.chat.id, ctx.message.message_id);
+          sent++;
+        } catch {}
+      }
+
+      ctx.session = {};
+      return ctx.reply(`📢 Sent to ${sent}`);
+    }
+
+    if (s.step === 'ban') {
+      await users.updateOne({ userId: Number(ctx.message.text) }, { $set: { banned: true } });
+      ctx.session = {};
+      return ctx.reply('🚫 Banned');
+    }
+
+    if (s.step === 'unban') {
+      await users.updateOne({ userId: Number(ctx.message.text) }, { $set: { banned: false } });
+      ctx.session = {};
+      return ctx.reply('✅ Unbanned');
+    }
+
+    if (s.step === 'premium') {
+      await users.updateOne({ userId: Number(ctx.message.text) }, { $set: { premium: true } });
+      ctx.session = {};
+      return ctx.reply('💎 Premium given');
+    }
+
+    if (s.step === 'viewfiles') {
+      const files = await db.find({ chatId: Number(ctx.message.text) }).limit(10).toArray();
+
+      let text = '';
+      files.forEach(f => text += `${f.uniqueParam}\n`);
+
+      ctx.session = {};
+      return ctx.reply(text || 'No files');
+    }
+  }
+
+  // 🔐 PASSWORD INPUT
   if (s.step === 'set_password') {
     s.password = ctx.message.text;
     s.step = 'onetime';
-
-    return ctx.reply('👁 One-time view?', Markup.keyboard([['Yes', 'No']]).resize());
+    return ctx.reply('👁 One-time view?', Markup.keyboard([['Yes','No']]).resize());
   }
 
-  // STORE FILE
+  // 📦 STORE
   if (s.step === 'send') {
     const count = await db.countDocuments({ chatId: ctx.chat.id });
 
-    if (!user.premium && count >= FREE_LIMIT) {
+    if (!user.premium && count >= FREE_LIMIT)
       return ctx.reply('⚠️ Upgrade to premium');
-    }
 
     const id = Math.random().toString(36).substring(2, 10);
+
+    const size =
+      ctx.message?.document?.file_size ||
+      ctx.message?.video?.file_size ||
+      ctx.message?.photo?.slice(-1)[0]?.file_size ||
+      0;
 
     await db.insertOne({
       chatId: ctx.chat.id,
@@ -262,22 +251,23 @@ bot.on('message', async (ctx, next) => {
       expiresAt: s.expiresAt,
       password: s.password,
       oneTime: s.oneTime,
-      views: 0
+      views: 0,
+      fileSize: size
     });
+
+    console.log(`📥 Stored by ${ctx.from.id}`);
 
     ctx.session = {};
 
     return ctx.reply(
-      `✅ Stored!\n\nhttps://t.me/${ctx.botInfo.username}?start=${id}`,
-      menu()
+      `✅ Stored\n\nhttps://t.me/${ctx.botInfo.username}?start=${id}`,
+      userMenu()
     );
   }
 
-  // PASSWORD CHECK
+  // 🔐 PASSWORD CHECK
   if (s.check) {
     const stored = await db.findOne({ uniqueParam: s.check });
-
-    if (!stored) return ctx.reply('🚫 File not found');
 
     if (ctx.message.text !== stored.password)
       return ctx.reply('❌ Wrong password');
@@ -286,10 +276,9 @@ bot.on('message', async (ctx, next) => {
     return sendStored(ctx, stored);
   }
 
-  // SEARCH
+  // 🔍 SEARCH
   if (s.step === 'search') {
     const id = ctx.message.text.split('start=')[1] || ctx.message.text;
-
     const file = await db.findOne({ uniqueParam: id });
 
     if (!file) return ctx.reply('❌ Not found');
@@ -297,8 +286,6 @@ bot.on('message', async (ctx, next) => {
     ctx.session = {};
     return sendStored(ctx, file);
   }
-
-  return next();
 });
 
 /* ========================
@@ -306,16 +293,14 @@ bot.on('message', async (ctx, next) => {
 ======================== */
 async function sendStored(ctx, stored) {
   try {
-    await ctx.telegram.copyMessage(
-      ctx.chat.id,
-      stored.chatId,
-      stored.messageId
-    );
+    await ctx.telegram.copyMessage(ctx.chat.id, stored.chatId, stored.messageId);
 
     await db.updateOne(
       { uniqueParam: stored.uniqueParam },
       { $inc: { views: 1 } }
     );
+
+    console.log(`📤 Viewed ${stored.uniqueParam}`);
 
     if (stored.oneTime) {
       await db.deleteOne({ uniqueParam: stored.uniqueParam });
@@ -325,3 +310,43 @@ async function sendStored(ctx, stored) {
     ctx.reply('⚠️ Cannot retrieve file');
   }
 }
+
+/* ========================
+   ADMIN BUTTONS
+======================== */
+bot.hears('📢 Broadcast', (ctx) => {
+  if (!isAdmin(ctx)) return;
+  ctx.session.step = 'broadcast';
+  ctx.reply('Send message/media');
+});
+
+bot.hears('🚫 Ban', (ctx) => {
+  if (!isAdmin(ctx)) return;
+  ctx.session.step = 'ban';
+  ctx.reply('Send user ID');
+});
+
+bot.hears('✅ Unban', (ctx) => {
+  if (!isAdmin(ctx)) return;
+  ctx.session.step = 'unban';
+  ctx.reply('Send user ID');
+});
+
+bot.hears('💎 Give Premium', (ctx) => {
+  if (!isAdmin(ctx)) return;
+  ctx.session.step = 'premium';
+  ctx.reply('Send user ID');
+});
+
+bot.hears('📁 User Files', (ctx) => {
+  if (!isAdmin(ctx)) return;
+  ctx.session.step = 'viewfiles';
+  ctx.reply('Send user ID');
+});
+
+/* ========================
+   PREMIUM BUTTON FIX
+======================== */
+bot.hears('💎 Premium', (ctx) => {
+  ctx.reply(`💎 Contact: @${ADMIN_USERNAME}`);
+});
