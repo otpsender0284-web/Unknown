@@ -1,4 +1,5 @@
 const { Telegraf, Markup, session } = require('telegraf');
+const fs = require('fs');
 
 if (global.botRunning) return;
 global.botRunning = true;
@@ -6,19 +7,47 @@ global.botRunning = true;
 const bot = new Telegraf(process.env.BOT_TOKEN);
 bot.use(session());
 
-const db = [];
+/* ========================
+   💾 DATABASE (PERSISTENT)
+======================== */
+const DB_FILE = './database.json';
+
+function loadDB() {
+  if (!fs.existsSync(DB_FILE)) return [];
+  return JSON.parse(fs.readFileSync(DB_FILE));
+}
+
+function saveDB(data) {
+  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+}
+
+let db = loadDB();
 
 /* ========================
-   ⚡ HELPER
+   ⚡ ANIMATION SYSTEM
 ======================== */
 const wait = (ms) => new Promise(res => setTimeout(res, ms));
 
-async function loading(ctx, text = "⏳ Processing...") {
-  const msg = await ctx.reply(text);
-  await wait(400);
+async function animate(ctx, steps) {
+  let msg = await ctx.reply(steps[0]);
+  for (let i = 1; i < steps.length; i++) {
+    await wait(600);
+    try {
+      await ctx.telegram.editMessageText(
+        ctx.chat.id,
+        msg.message_id,
+        null,
+        steps[i]
+      );
+    } catch {}
+  }
+  await wait(300);
   try { await ctx.deleteMessage(msg.message_id); } catch {}
 }
 
+/* ========================
+   🎛️ MENUS
+======================== */
 const mainMenu = () =>
   Markup.keyboard([
     ['📦 Store Message'],
@@ -29,12 +58,12 @@ const backMenu = () =>
   Markup.keyboard([['⬅️ Back']]).resize();
 
 /* ========================
-   🚀 START (WITH LINK SUPPORT)
+   🚀 START + LINK
 ======================== */
 bot.start(async (ctx) => {
   const param = ctx.startPayload;
 
-  // 🔗 If link clicked
+  // 🔗 OPEN STORED FILE
   if (param) {
     const stored = db.find(d => d.uniqueParam === param);
 
@@ -52,25 +81,34 @@ bot.start(async (ctx) => {
     return sendStored(ctx, stored);
   }
 
-  // 👋 Normal start
+  // 👋 NORMAL START
   ctx.session = { step: 'menu' };
-  await loading(ctx, '🔄 Starting...');
+
+  await animate(ctx, [
+    '🔄 Starting...',
+    '⚡ Loading system...',
+    '🚀 Almost ready...'
+  ]);
+
   ctx.reply('👋 Welcome!', mainMenu());
 });
 
 /* ========================
-   📦 STORE START
+   📦 STORE FLOW
 ======================== */
 bot.hears('📦 Store Message', async (ctx) => {
 
-  // ⚠️ IMPORTANT FIX
   if (ctx.chat.type !== 'private') {
-    return ctx.reply('❌ Please use bot in private chat only');
+    return ctx.reply('❌ Use bot in private chat only');
   }
 
   ctx.session = { step: 'expiry' };
 
-  await loading(ctx);
+  await animate(ctx, [
+    '⚙️ Opening settings...',
+    '⏳ Preparing options...'
+  ]);
+
   ctx.reply('⏳ Select expiry:', Markup.keyboard([
     ['10 min', '1 hour'],
     ['1 day', 'Never'],
@@ -97,7 +135,11 @@ bot.hears(['10 min', '1 hour', '1 day', 'Never'], async (ctx) => {
 
   ctx.session.step = 'password';
 
-  await loading(ctx);
+  await animate(ctx, [
+    '🔐 Applying settings...',
+    '🔒 Securing options...'
+  ]);
+
   ctx.reply('🔐 Add password?', Markup.keyboard([
     ['Yes', 'No'],
     ['⬅️ Back']
@@ -156,7 +198,7 @@ bot.hears('⬅️ Back', (ctx) => {
 bot.on('message', async (ctx) => {
   const s = ctx.session;
 
-  // 🔐 PASSWORD INPUT
+  // PASSWORD INPUT
   if (s?.step === 'set_password') {
     s.password = ctx.message.text;
     s.step = 'onetime';
@@ -167,10 +209,14 @@ bot.on('message', async (ctx) => {
     ]).resize());
   }
 
-  // 📦 STORE MESSAGE
+  // STORE MESSAGE
   if (s?.step === 'send') {
 
-    await loading(ctx, '📦 Storing...');
+    await animate(ctx, [
+      '📦 Storing message...',
+      '🔐 Encrypting...',
+      '💾 Saving...'
+    ]);
 
     const id = Math.random().toString(36).substring(2, 10);
 
@@ -184,6 +230,8 @@ bot.on('message', async (ctx) => {
       views: 0
     });
 
+    saveDB(db);
+
     const link = `https://t.me/${ctx.botInfo.username}?start=${id}`;
 
     ctx.session = { step: 'menu' };
@@ -191,7 +239,7 @@ bot.on('message', async (ctx) => {
     return ctx.reply(`✅ Stored successfully!\n\n🔗 ${link}`, mainMenu());
   }
 
-  // 🔐 PASSWORD CHECK
+  // PASSWORD CHECK
   if (s?.check) {
     const stored = db.find(d => d.uniqueParam === s.check);
 
@@ -207,11 +255,15 @@ bot.on('message', async (ctx) => {
 });
 
 /* ========================
-   📤 SEND FUNCTION (FIXED)
+   📤 SEND FILE
 ======================== */
 async function sendStored(ctx, stored) {
   try {
-    await loading(ctx, '📤 Sending file...');
+    await animate(ctx, [
+      '📤 Fetching file...',
+      '⚡ Processing...',
+      '🚀 Sending now...'
+    ]);
 
     await ctx.telegram.copyMessage(
       ctx.chat.id,
@@ -220,10 +272,14 @@ async function sendStored(ctx, stored) {
     );
 
     stored.views++;
+    saveDB(db);
 
     if (stored.oneTime) {
       const i = db.findIndex(d => d.uniqueParam === stored.uniqueParam);
-      if (i !== -1) db.splice(i, 1);
+      if (i !== -1) {
+        db.splice(i, 1);
+        saveDB(db);
+      }
     }
 
   } catch (err) {
@@ -231,10 +287,9 @@ async function sendStored(ctx, stored) {
 
     ctx.reply(
       '⚠️ Cannot retrieve file.\n\n' +
-      'Make sure:\n' +
-      '• Message is not deleted\n' +
-      '• Stored in private chat\n' +
-      '• Bot has access'
+      '• Message deleted\n' +
+      '• Bot has no access\n' +
+      '• Not stored properly'
     );
   }
 }
@@ -259,4 +314,4 @@ bot.hears('📁 My Files', (ctx) => {
 /* ======================== */
 bot.launch({ dropPendingUpdates: true });
 
-console.log('🚀 BOT RUNNING PERFECTLY');
+console.log('🚀 ANIMATED BOT RUNNING');
