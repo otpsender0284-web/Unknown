@@ -8,8 +8,7 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 bot.use(session({ defaultSession: () => ({}) }));
 
 const ADMIN_ID = 8065726393;
-const ADMIN_USERNAME = "yourusername"; // 👈 change anytime
-const FREE_LIMIT = 5;
+const ADMIN_USERNAME = "yourusername";
 
 /* ========================
    💾 DB INIT
@@ -159,14 +158,78 @@ bot.hears('👥 Users', async (ctx) => {
   let text = '👥 Users:\n\n';
 
   list.forEach(u => {
-    text += `🆔 ${u.userId}\n💎 ${u.premium}\n🚫 ${u.banned}\n\n`;
+    text += `🆔 ${u.userId}\n🚫 ${u.banned}\n\n`;
   });
 
   ctx.reply(text);
 });
 
 /* ========================
-   🧠 MAIN MESSAGE HANDLER
+   📦 STORE FLOW
+======================== */
+bot.hears('📦 Store Message', (ctx) => {
+  ctx.session = { step: 'expiry' };
+
+  ctx.reply('⏳ Select expiry:', Markup.keyboard([
+    ['10 min', '1 hour'],
+    ['1 day', 'Never']
+  ]).resize());
+});
+
+/* ========================
+   ⏳ EXPIRY
+======================== */
+bot.hears(['10 min', '1 hour', '1 day', 'Never'], (ctx) => {
+  if (ctx.session?.step !== 'expiry') return;
+
+  const map = {
+    '10 min': 600000,
+    '1 hour': 3600000,
+    '1 day': 86400000
+  };
+
+  ctx.session.expiresAt =
+    ctx.message.text === 'Never'
+      ? null
+      : Date.now() + map[ctx.message.text];
+
+  ctx.session.step = 'password';
+
+  ctx.reply('🔐 Add password?', Markup.keyboard([['Yes','No']]).resize());
+});
+
+/* ========================
+   🔐 PASSWORD FLOW
+======================== */
+bot.hears('Yes', (ctx) => {
+  if (ctx.session?.step === 'password') {
+    ctx.session.step = 'set_password';
+    return ctx.reply('🔐 Send password');
+  }
+
+  if (ctx.session?.step === 'onetime') {
+    ctx.session.oneTime = true;
+    ctx.session.step = 'send';
+    return ctx.reply('📤 Send file (photo/video/document/text)', Markup.removeKeyboard());
+  }
+});
+
+bot.hears('No', (ctx) => {
+  if (ctx.session?.step === 'password') {
+    ctx.session.password = null;
+    ctx.session.step = 'onetime';
+    return ctx.reply('👁 One-time view?', Markup.keyboard([['Yes','No']]).resize());
+  }
+
+  if (ctx.session?.step === 'onetime') {
+    ctx.session.oneTime = false;
+    ctx.session.step = 'send';
+    return ctx.reply('📤 Send file (photo/video/document/text)', Markup.removeKeyboard());
+  }
+});
+
+/* ========================
+   🧠 MESSAGE HANDLER
 ======================== */
 bot.on('message', async (ctx) => {
   const s = ctx.session || {};
@@ -174,67 +237,15 @@ bot.on('message', async (ctx) => {
 
   if (user.banned) return;
 
-  // 🔥 ADMIN ACTIONS
-  if (isAdmin(ctx)) {
-
-    if (s.step === 'broadcast') {
-      const all = await users.find().toArray();
-      let sent = 0;
-
-      for (const u of all) {
-        try {
-          await ctx.telegram.copyMessage(u.userId, ctx.chat.id, ctx.message.message_id);
-          sent++;
-        } catch {}
-      }
-
-      ctx.session = {};
-      return ctx.reply(`📢 Sent to ${sent}`);
-    }
-
-    if (s.step === 'ban') {
-      await users.updateOne({ userId: Number(ctx.message.text) }, { $set: { banned: true } });
-      ctx.session = {};
-      return ctx.reply('🚫 Banned');
-    }
-
-    if (s.step === 'unban') {
-      await users.updateOne({ userId: Number(ctx.message.text) }, { $set: { banned: false } });
-      ctx.session = {};
-      return ctx.reply('✅ Unbanned');
-    }
-
-    if (s.step === 'premium') {
-      await users.updateOne({ userId: Number(ctx.message.text) }, { $set: { premium: true } });
-      ctx.session = {};
-      return ctx.reply('💎 Premium given');
-    }
-
-    if (s.step === 'viewfiles') {
-      const files = await db.find({ chatId: Number(ctx.message.text) }).limit(10).toArray();
-
-      let text = '';
-      files.forEach(f => text += `${f.uniqueParam}\n`);
-
-      ctx.session = {};
-      return ctx.reply(text || 'No files');
-    }
-  }
-
-  // 🔐 PASSWORD INPUT
+  // PASSWORD INPUT
   if (s.step === 'set_password') {
     s.password = ctx.message.text;
     s.step = 'onetime';
     return ctx.reply('👁 One-time view?', Markup.keyboard([['Yes','No']]).resize());
   }
 
-  // 📦 STORE
+  // STORE (FREE FOR ALL)
   if (s.step === 'send') {
-    const count = await db.countDocuments({ chatId: ctx.chat.id });
-
-    if (!user.premium && count >= FREE_LIMIT)
-      return ctx.reply('⚠️ Upgrade to premium');
-
     const id = Math.random().toString(36).substring(2, 10);
 
     const size =
@@ -265,9 +276,11 @@ bot.on('message', async (ctx) => {
     );
   }
 
-  // 🔐 PASSWORD CHECK
+  // PASSWORD CHECK
   if (s.check) {
     const stored = await db.findOne({ uniqueParam: s.check });
+
+    if (!stored) return ctx.reply('🚫 File not found');
 
     if (ctx.message.text !== stored.password)
       return ctx.reply('❌ Wrong password');
@@ -276,7 +289,7 @@ bot.on('message', async (ctx) => {
     return sendStored(ctx, stored);
   }
 
-  // 🔍 SEARCH
+  // SEARCH
   if (s.step === 'search') {
     const id = ctx.message.text.split('start=')[1] || ctx.message.text;
     const file = await db.findOne({ uniqueParam: id });
@@ -309,44 +322,4 @@ async function sendStored(ctx, stored) {
   } catch {
     ctx.reply('⚠️ Cannot retrieve file');
   }
-}
-
-/* ========================
-   ADMIN BUTTONS
-======================== */
-bot.hears('📢 Broadcast', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  ctx.session.step = 'broadcast';
-  ctx.reply('Send message/media');
-});
-
-bot.hears('🚫 Ban', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  ctx.session.step = 'ban';
-  ctx.reply('Send user ID');
-});
-
-bot.hears('✅ Unban', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  ctx.session.step = 'unban';
-  ctx.reply('Send user ID');
-});
-
-bot.hears('💎 Give Premium', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  ctx.session.step = 'premium';
-  ctx.reply('Send user ID');
-});
-
-bot.hears('📁 User Files', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  ctx.session.step = 'viewfiles';
-  ctx.reply('Send user ID');
-});
-
-/* ========================
-   PREMIUM BUTTON FIX
-======================== */
-bot.hears('💎 Premium', (ctx) => {
-  ctx.reply(`💎 Contact: @${ADMIN_USERNAME}`);
-});
+              }
