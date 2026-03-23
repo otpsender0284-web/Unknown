@@ -1,42 +1,61 @@
-const { Telegraf } = require('telegraf');
+const { Telegraf, Markup } = require('telegraf');
+
+if (global.botRunning) return;
+global.botRunning = true;
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 /* ========================
-   🔹 SIMPLE DB
+   🔹 DB
 ======================== */
 const db = [];
 
 /* ========================
-   ⚙️ START
+   🎛️ MAIN MENU
 ======================== */
-bot.start(async (ctx) => {
-  const param = ctx.startPayload;
+function mainMenu() {
+  return Markup.keyboard([
+    ['📦 Store Message'],
+    ['📁 My Files'],
+    ['❌ Cancel']
+  ]).resize();
+}
 
-  if (!param) {
-    return ctx.reply('👋 Welcome!\nUse /store to save message');
-  }
+/* ========================
+   ⚙️ STORE MENU
+======================== */
+function storeMenu() {
+  return Markup.keyboard([
+    ['⏳ Expiry', '🔐 Password'],
+    ['👁 One-Time'],
+    ['✅ Continue'],
+    ['⬅️ Back / Cancel']
+  ]).resize();
+}
 
-  const stored = db.find(d => d.uniqueParam === param);
+/* ========================
+   ⏳ EXPIRY MENU
+======================== */
+function expiryMenu() {
+  return Markup.keyboard([
+    ['10 min', '1 hour'],
+    ['1 day', 'Never'],
+    ['⬅️ Back / Cancel']
+  ]).resize();
+}
 
-  if (!stored) return ctx.reply('🚫 File not found');
-
-  if (stored.expiresAt && Date.now() > stored.expiresAt) {
-    return ctx.reply('⏳ Link expired');
-  }
-
-  if (stored.password) {
-    ctx.session = { checkPass: param };
-    return ctx.reply('🔐 Enter password');
-  }
-
-  return sendStored(ctx, stored);
+/* ========================
+   🚀 START
+======================== */
+bot.start((ctx) => {
+  ctx.session = null;
+  ctx.reply('👋 Welcome!', mainMenu());
 });
 
 /* ========================
-   📦 STORE
+   📦 STORE START
 ======================== */
-bot.command('store', async (ctx) => {
+bot.hears('📦 Store Message', (ctx) => {
   ctx.session = {
     expiresAt: null,
     password: null,
@@ -44,86 +63,79 @@ bot.command('store', async (ctx) => {
     step: 'menu'
   };
 
-  await ctx.reply('⚙️ Choose options:', {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: '⏳ Expiry', callback_data: 'exp_menu' }],
-        [{ text: '🔐 Password', callback_data: 'set_pass' }],
-        [{ text: '👁 One-Time', callback_data: 'one_time' }],
-        [{ text: '✅ Continue', callback_data: 'continue' }]
-      ]
-    }
-  });
+  ctx.reply('⚙️ Choose options:', storeMenu());
 });
 
 /* ========================
    ⏳ EXPIRY
 ======================== */
-bot.action('exp_menu', (ctx) => {
-  ctx.editMessageText('Select expiry:', {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: '10 min', callback_data: 'exp_10' }],
-        [{ text: '1 hour', callback_data: 'exp_1h' }],
-        [{ text: '1 day', callback_data: 'exp_1d' }],
-        [{ text: 'Never', callback_data: 'exp_never' }]
-      ]
-    }
-  });
+bot.hears('⏳ Expiry', (ctx) => {
+  ctx.reply('Select expiry:', expiryMenu());
 });
 
-bot.action(/exp_/, (ctx) => {
+bot.hears(['10 min', '1 hour', '1 day', 'Never'], (ctx) => {
   const map = {
-    exp_10: 10 * 60 * 1000,
-    exp_1h: 60 * 60 * 1000,
-    exp_1d: 24 * 60 * 60 * 1000
+    '10 min': 10 * 60 * 1000,
+    '1 hour': 60 * 60 * 1000,
+    '1 day': 24 * 60 * 60 * 1000
   };
 
-  if (ctx.callbackQuery.data === 'exp_never') {
+  if (ctx.message.text === 'Never') {
     ctx.session.expiresAt = null;
   } else {
-    ctx.session.expiresAt = Date.now() + map[ctx.callbackQuery.data];
+    ctx.session.expiresAt = Date.now() + map[ctx.message.text];
   }
 
-  ctx.answerCbQuery('✅ Expiry set');
+  ctx.reply('✅ Expiry set', storeMenu());
 });
 
 /* ========================
    🔐 PASSWORD
 ======================== */
-bot.action('set_pass', (ctx) => {
+bot.hears('🔐 Password', (ctx) => {
   ctx.session.step = 'wait_pass';
-  ctx.reply('🔐 Send password');
+  ctx.reply('Send password:');
 });
 
 /* ========================
    👁 ONE TIME
 ======================== */
-bot.action('one_time', (ctx) => {
+bot.hears('👁 One-Time', (ctx) => {
   ctx.session.oneTime = true;
-  ctx.answerCbQuery('👁 Enabled');
+  ctx.reply('👁 One-time enabled', storeMenu());
 });
 
 /* ========================
    ▶️ CONTINUE
 ======================== */
-bot.action('continue', (ctx) => {
+bot.hears('✅ Continue', (ctx) => {
   ctx.session.step = 'send_msg';
   ctx.reply('📨 Send message to store');
 });
 
 /* ========================
-   🧠 MESSAGE
+   🔙 BACK / CANCEL
+======================== */
+bot.hears(['⬅️ Back / Cancel', '❌ Cancel'], (ctx) => {
+  ctx.session = null;
+  ctx.reply('❌ Cancelled', mainMenu());
+});
+
+/* ========================
+   🧠 MESSAGE HANDLER
 ======================== */
 bot.on('message', async (ctx) => {
 
+  // Password set
   if (ctx.session?.step === 'wait_pass') {
     ctx.session.password = ctx.message.text;
     ctx.session.step = 'menu';
-    return ctx.reply('✅ Password saved');
+    return ctx.reply('✅ Password saved', storeMenu());
   }
 
+  // Store message
   if (ctx.session?.step === 'send_msg') {
+
     const uniqueParam = Math.random().toString(36).substring(2, 10);
 
     db.push({
@@ -140,35 +152,11 @@ bot.on('message', async (ctx) => {
 
     ctx.session = null;
 
-    return ctx.reply(`✅ Stored!\n\n🔗 ${link}`);
-  }
-
-  if (ctx.session?.checkPass) {
-    const stored = db.find(d => d.uniqueParam === ctx.session.checkPass);
-
-    if (ctx.message.text !== stored.password) {
-      return ctx.reply('❌ Wrong password');
-    }
-
-    ctx.session = null;
-    return sendStored(ctx, stored);
+    return ctx.reply(`✅ Stored!\n\n🔗 ${link}`, mainMenu());
   }
 });
 
-/* ========================
-   📤 SEND
-======================== */
-async function sendStored(ctx, stored) {
-  await ctx.telegram.copyMessage(ctx.chat.id, stored.chatId, stored.messageId);
-
-  stored.views++;
-
-  if (stored.oneTime) {
-    const index = db.findIndex(d => d.uniqueParam === stored.uniqueParam);
-    if (index !== -1) db.splice(index, 1);
-  }
-}
-
 /* ======================== */
-bot.launch();
-console.log('🚀 Running...');
+bot.launch({ dropPendingUpdates: true });
+
+console.log('🚀 Bot running...');
