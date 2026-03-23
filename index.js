@@ -1,11 +1,23 @@
-const { Telegraf, Markup } = require('telegraf');
+const { Telegraf, Markup, session } = require('telegraf');
 
 if (global.botRunning) return;
 global.botRunning = true;
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
+bot.use(session());
 
 const db = [];
+
+/* ========================
+   ⚡ ANIMATION HELPER
+======================== */
+const wait = (ms) => new Promise(res => setTimeout(res, ms));
+
+async function loading(ctx, text = "⏳ Processing...") {
+  const msg = await ctx.reply(text);
+  await wait(600);
+  try { await ctx.deleteMessage(msg.message_id); } catch {}
+}
 
 /* ========================
    🎛️ MENUS
@@ -16,23 +28,24 @@ const mainMenu = () =>
     ['📁 My Files']
   ]).resize();
 
-const backBtn = () =>
+const backMenu = () =>
   Markup.keyboard([['⬅️ Back']]).resize();
 
 /* ========================
    🚀 START
 ======================== */
-bot.start((ctx) => {
-  ctx.session = null;
+bot.start(async (ctx) => {
+  ctx.session = { step: 'menu' };
+  await loading(ctx, '🔄 Starting...');
   ctx.reply('👋 Welcome!', mainMenu());
 });
 
 /* ========================
-   📦 STORE START
+   📦 STORE FLOW
 ======================== */
-bot.hears('📦 Store Message', (ctx) => {
-  ctx.session = { step: 'ask_expiry' };
-
+bot.hears('📦 Store Message', async (ctx) => {
+  ctx.session = { step: 'expiry' };
+  await loading(ctx);
   ctx.reply('⏳ Select expiry:', Markup.keyboard([
     ['10 min', '1 hour'],
     ['1 day', 'Never'],
@@ -43,13 +56,13 @@ bot.hears('📦 Store Message', (ctx) => {
 /* ========================
    ⏳ EXPIRY
 ======================== */
-bot.hears(['10 min', '1 hour', '1 day', 'Never'], (ctx) => {
-  if (!ctx.session) return;
+bot.hears(['10 min', '1 hour', '1 day', 'Never'], async (ctx) => {
+  if (ctx.session?.step !== 'expiry') return;
 
   const map = {
-    '10 min': 10 * 60 * 1000,
-    '1 hour': 60 * 60 * 1000,
-    '1 day': 24 * 60 * 60 * 1000
+    '10 min': 600000,
+    '1 hour': 3600000,
+    '1 day': 86400000
   };
 
   ctx.session.expiresAt =
@@ -57,8 +70,9 @@ bot.hears(['10 min', '1 hour', '1 day', 'Never'], (ctx) => {
       ? null
       : Date.now() + map[ctx.message.text];
 
-  ctx.session.step = 'ask_password';
+  ctx.session.step = 'password';
 
+  await loading(ctx);
   ctx.reply('🔐 Add password?', Markup.keyboard([
     ['Yes', 'No'],
     ['⬅️ Back']
@@ -69,17 +83,17 @@ bot.hears(['10 min', '1 hour', '1 day', 'Never'], (ctx) => {
    🔐 PASSWORD STEP
 ======================== */
 bot.hears('Yes', (ctx) => {
-  if (!ctx.session) return;
+  if (ctx.session?.step !== 'password') return;
 
   ctx.session.step = 'set_password';
-  ctx.reply('🔐 Send password:', backBtn());
+  ctx.reply('🔐 Send password:', backMenu());
 });
 
 bot.hears('No', (ctx) => {
-  if (!ctx.session) return;
+  if (ctx.session?.step !== 'password') return;
 
   ctx.session.password = null;
-  ctx.session.step = 'ask_onetime';
+  ctx.session.step = 'onetime';
 
   ctx.reply('👁 One-time view?', Markup.keyboard([
     ['Yes', 'No'],
@@ -88,38 +102,27 @@ bot.hears('No', (ctx) => {
 });
 
 /* ========================
-   👁 ONE TIME
+   👁 ONE-TIME
 ======================== */
-bot.hears('Yes', (ctx) => {
-  if (!ctx.session) return;
+bot.hears(['Yes', 'No'], (ctx) => {
+  if (ctx.session?.step !== 'onetime') return;
 
-  if (ctx.session.step === 'ask_onetime') {
-    ctx.session.oneTime = true;
-    ctx.session.step = 'send_msg';
-    return ctx.reply('📨 Send message to store', backBtn());
-  }
-});
+  ctx.session.oneTime = ctx.message.text === 'Yes';
+  ctx.session.step = 'send';
 
-bot.hears('No', (ctx) => {
-  if (!ctx.session) return;
-
-  if (ctx.session.step === 'ask_onetime') {
-    ctx.session.oneTime = false;
-    ctx.session.step = 'send_msg';
-    return ctx.reply('📨 Send message to store', backBtn());
-  }
+  ctx.reply('📨 Send message to store', backMenu());
 });
 
 /* ========================
    🔙 BACK
 ======================== */
 bot.hears('⬅️ Back', (ctx) => {
-  ctx.session = null;
+  ctx.session = { step: 'menu' };
   ctx.reply('🔙 Back to menu', mainMenu());
 });
 
 /* ========================
-   🧠 MESSAGE HANDLER
+   🧠 MESSAGE HANDLER (ONLY ONE)
 ======================== */
 bot.on('message', async (ctx) => {
   const s = ctx.session;
@@ -127,7 +130,7 @@ bot.on('message', async (ctx) => {
   // PASSWORD INPUT
   if (s?.step === 'set_password') {
     s.password = ctx.message.text;
-    s.step = 'ask_onetime';
+    s.step = 'onetime';
 
     return ctx.reply('👁 One-time view?', Markup.keyboard([
       ['Yes', 'No'],
@@ -136,7 +139,9 @@ bot.on('message', async (ctx) => {
   }
 
   // STORE MESSAGE
-  if (s?.step === 'send_msg') {
+  if (s?.step === 'send') {
+
+    await loading(ctx, '📦 Storing...');
 
     const id = Math.random().toString(36).substring(2, 10);
 
@@ -152,9 +157,21 @@ bot.on('message', async (ctx) => {
 
     const link = `https://t.me/${ctx.botInfo.username}?start=${id}`;
 
-    ctx.session = null;
+    ctx.session = { step: 'menu' };
 
     return ctx.reply(`✅ Stored!\n\n🔗 ${link}`, mainMenu());
+  }
+
+  // PASSWORD CHECK
+  if (s?.check) {
+    const stored = db.find(d => d.uniqueParam === s.check);
+
+    if (ctx.message.text !== stored.password) {
+      return ctx.reply('❌ Wrong password');
+    }
+
+    ctx.session = { step: 'menu' };
+    return sendStored(ctx, stored);
   }
 });
 
@@ -163,11 +180,9 @@ bot.on('message', async (ctx) => {
 ======================== */
 bot.start(async (ctx) => {
   const param = ctx.startPayload;
-
   if (!param) return;
 
   const stored = db.find(d => d.uniqueParam === param);
-
   if (!stored) return ctx.reply('🚫 Not found');
 
   if (stored.expiresAt && Date.now() > stored.expiresAt) {
@@ -175,7 +190,7 @@ bot.start(async (ctx) => {
   }
 
   if (stored.password) {
-    ctx.session = { checkPass: param };
+    ctx.session = { check: param };
     return ctx.reply('🔐 Enter password');
   }
 
@@ -183,25 +198,10 @@ bot.start(async (ctx) => {
 });
 
 /* ========================
-   🔐 PASSWORD CHECK
-======================== */
-bot.on('message', async (ctx) => {
-  if (ctx.session?.checkPass) {
-    const stored = db.find(d => d.uniqueParam === ctx.session.checkPass);
-
-    if (ctx.message.text !== stored.password) {
-      return ctx.reply('❌ Wrong password');
-    }
-
-    ctx.session = null;
-    return sendStored(ctx, stored);
-  }
-});
-
-/* ========================
    📤 SEND
 ======================== */
 async function sendStored(ctx, stored) {
+  await loading(ctx, '📤 Sending...');
   await ctx.telegram.copyMessage(ctx.chat.id, stored.chatId, stored.messageId);
 
   stored.views++;
@@ -232,4 +232,4 @@ bot.hears('📁 My Files', (ctx) => {
 /* ======================== */
 bot.launch({ dropPendingUpdates: true });
 
-console.log('🚀 Bot running...');
+console.log('🚀 PERFECT BOT RUNNING');
