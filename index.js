@@ -1,5 +1,5 @@
 const { Telegraf, Markup, session } = require('telegraf');
-const fs = require('fs');
+const { MongoClient } = require('mongodb');
 
 if (global.botRunning) return;
 global.botRunning = true;
@@ -8,20 +8,17 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 bot.use(session());
 
 /* ========================
-   💾 DATABASE (PERSISTENT)
+   💾 MONGODB (ONLY CHANGE)
 ======================== */
-const DB_FILE = './database.json';
+const client = new MongoClient(process.env.MONGO_URI);
+let db;
 
-function loadDB() {
-  if (!fs.existsSync(DB_FILE)) return [];
-  return JSON.parse(fs.readFileSync(DB_FILE));
+async function initDB() {
+  await client.connect();
+  db = client.db('telegramBot').collection('files');
+  console.log('✅ MongoDB Connected');
 }
-
-function saveDB(data) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
-}
-
-let db = loadDB();
+initDB();
 
 /* ========================
    ⚡ ANIMATION SYSTEM
@@ -63,9 +60,8 @@ const backMenu = () =>
 bot.start(async (ctx) => {
   const param = ctx.startPayload;
 
-  // 🔗 OPEN STORED FILE
   if (param) {
-    const stored = db.find(d => d.uniqueParam === param);
+    const stored = await db.findOne({ uniqueParam: param });
 
     if (!stored) return ctx.reply('🚫 File not found');
 
@@ -81,7 +77,6 @@ bot.start(async (ctx) => {
     return sendStored(ctx, stored);
   }
 
-  // 👋 NORMAL START
   ctx.session = { step: 'menu' };
 
   await animate(ctx, [
@@ -198,7 +193,6 @@ bot.hears('⬅️ Back', (ctx) => {
 bot.on('message', async (ctx) => {
   const s = ctx.session;
 
-  // PASSWORD INPUT
   if (s?.step === 'set_password') {
     s.password = ctx.message.text;
     s.step = 'onetime';
@@ -209,7 +203,6 @@ bot.on('message', async (ctx) => {
     ]).resize());
   }
 
-  // STORE MESSAGE
   if (s?.step === 'send') {
 
     await animate(ctx, [
@@ -220,7 +213,7 @@ bot.on('message', async (ctx) => {
 
     const id = Math.random().toString(36).substring(2, 10);
 
-    db.push({
+    await db.insertOne({
       chatId: ctx.chat.id,
       messageId: ctx.message.message_id,
       uniqueParam: id,
@@ -230,8 +223,6 @@ bot.on('message', async (ctx) => {
       views: 0
     });
 
-    saveDB(db);
-
     const link = `https://t.me/${ctx.botInfo.username}?start=${id}`;
 
     ctx.session = { step: 'menu' };
@@ -239,9 +230,8 @@ bot.on('message', async (ctx) => {
     return ctx.reply(`✅ Stored successfully!\n\n🔗 ${link}`, mainMenu());
   }
 
-  // PASSWORD CHECK
   if (s?.check) {
-    const stored = db.find(d => d.uniqueParam === s.check);
+    const stored = await db.findOne({ uniqueParam: s.check });
 
     if (!stored) return ctx.reply('🚫 File not found');
 
@@ -271,34 +261,25 @@ async function sendStored(ctx, stored) {
       stored.messageId
     );
 
-    stored.views++;
-    saveDB(db);
+    await db.updateOne(
+      { uniqueParam: stored.uniqueParam },
+      { $inc: { views: 1 } }
+    );
 
     if (stored.oneTime) {
-      const i = db.findIndex(d => d.uniqueParam === stored.uniqueParam);
-      if (i !== -1) {
-        db.splice(i, 1);
-        saveDB(db);
-      }
+      await db.deleteOne({ uniqueParam: stored.uniqueParam });
     }
 
   } catch (err) {
-    console.log(err);
-
-    ctx.reply(
-      '⚠️ Cannot retrieve file.\n\n' +
-      '• Message deleted\n' +
-      '• Bot has no access\n' +
-      '• Not stored properly'
-    );
+    ctx.reply('⚠️ Cannot retrieve file');
   }
 }
 
 /* ========================
    📁 MY FILES
 ======================== */
-bot.hears('📁 My Files', (ctx) => {
-  const files = db.filter(d => d.chatId === ctx.chat.id);
+bot.hears('📁 My Files', async (ctx) => {
+  const files = await db.find({ chatId: ctx.chat.id }).toArray();
 
   if (!files.length) return ctx.reply('📭 No files');
 
@@ -314,4 +295,4 @@ bot.hears('📁 My Files', (ctx) => {
 /* ======================== */
 bot.launch({ dropPendingUpdates: true });
 
-console.log('🚀 ANIMATED BOT RUNNING');
+console.log('🚀 ANIMATED BOT WITH MONGO RUNNING');
